@@ -135,13 +135,106 @@ int main(int argc, char *argv[]) {
         pthread_create(&thread_cozinheiros[i], NULL, cozinheiro, NULL);
     }
 
+    for (int i = 0; i < NUM_GARCONS; i++) {
+        pthread_create(&thread_garcons[i], NULL, garcom, NULL);
+    }
+
+    for (int i = 0; i < NUM_LIMPEZA; i++) {
+        pthread_create(&thread_limpeza[i], NULL, responsavel_limpeza, NULL);
+    }
+
+    pthread_create(&thread_estoquista, NULL, estoquista, NULL);
+    pthread_create(&thread_gestor_mesas, NULL, gestor_mesas, NULL);
+    pthread_create(&thread_gerente_dia, NULL, gerente_dia, NULL);
+
+    pthread_join(thread_gerente_dia, NULL);
+
     return 0;
 }
 
-// -- IMPLEMENTAÇÃO DAS FUNÇÕES DAS ENTIDADES -- \\ 
+// -- IMPLEMENTAÇÃO DAS FUNÇÕES DAS ENTIDADES -- \\
+
+int mesas_ativas = 0;                       // Variável para rastrear o número de mesas ativas
+int clientes_esperando = 0;                 // Variável para rastrear o número de clientes que não conseguiram sentar
+pthread_cond_t cond_demanda_por_mesas;
 
 void *cliente(void *arg) {
-    //Lógica do cliente
+    int id_cliente = *((int *)arg);
+    free(arg); // Libera memória alocada para o id
+
+    //Tempo de paciência do cliente para esperar uma mesa
+    struct timespec tempo_limite;
+    int mesa_alocada = -1;
+
+    // 1. Cliente tenta conseguir uma mesa
+    pthread_mutex_lock(&mutex_mesas);
+
+    //Se não houver mesas livres, o cliente entra na fila de espera
+    while (mesas_ocupadas >= num_mesas_max) {
+        printf("Cliente %d: Não tem mesas disponivéis, vou esperar na fila!", id_cliente);
+        //Sinaliza o gestor de mesas que há demanda
+        clientes_esperando++;
+        pthread_cond_signal(&cond_demanda_por_mesas);
+
+        //Define um tempo limite de 5 segundos para a espera
+        clock_gettime(CLOCK_REALTIME, &tempo_limite);
+        tempo_limite.tv_sec += 5;
+
+        int status = pthread_cond_timedwait(&cond_mesa_livre, &mutex_mesas, &tempo_limite);
+
+        //Se o tempo esgotar, o cliente desiste e vai embora
+        if (status == ETIMEDOUT) {
+            printf("Cliente %d: Sem paciência! Foi embora porque não tinha mesas.\n", id_cliente);
+            clientes_esperando--;
+            pthread_mutex_unlock(&mutex_mesas);
+            return NULL;
+        }
+    }
+
+    //Se o cliente chegou até aqui, uma mesa está disponivel. Ele a ocupa
+    for (int i = 0; i < num_mesas_max; i++) {
+        if (mesas[i].status == LIVRE) {
+            mesas[i].status == OCUPADA;
+            mesa_alocada = i;
+            mesas_ocupadas++;
+            printf("Cliente %d: Consegui uma mesa. Mesa %d ocupada. Total de mesas ocupadas: %d.\n", id_cliente, mesa_alocada, mesas_ocupadas);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&mutex_mesas);
+
+    // 2. Cliente faz o pedido
+    // (A logica de colocar o pedido na fila virá depois)
+    printf("Cliente %d: Fazendo o pedido na mesa %d.\n", id_cliente, mesa_alocada);
+    sleep(1);                                                                               // Simula o tempo para fazer o pedido
+
+    // 3. Cliente espera o prato
+    // (A logica de esperar pelo prato virá depois)
+    printf("Cliente %d: Esperando prato...\n", id_cliente);
+    sleep(3);                                                                               // Simula o tempo de espera pela comida
+
+    // 4. Cliente come e vai embora
+    printf("Cliente %d: Comendo... delicia!\n", id_cliente);
+    sleep(5); // Simula o tempo comendo                                                     // Simula o tempo comendo
+
+    // 5. Cliente sinaliza que está saindo e libera a mesa
+    pthread_mutex_lock(&mutex_mesas);
+    mesas_ocupadas--;
+
+    // 1 = mesa suja, 0 = mesa limpa (Vamos colocar um pouco de aleatoriedade para ver se o cliente foi educado)
+    int mesa_suja = rand() % 2; 
+
+    if (mesa_suja) {
+        mesas[mesa_alocada].status = SUJA;
+        printf("Cliente %d: Saiu. Mesa %d agora esta suja. Mesas ocupadas: %d.\n", id_cliente, mesa_alocada, mesas_ocupadas);
+        pthread_cond_signal(&cond_mesa_suja); // Sinaliza para a limpeza
+    } else {
+        mesas[mesa_alocada].status = LIVRE;
+        printf("Cliente %d: Saiu. Mesa %d agora esta livre (e ainda limpa). Mesas ocupadas: %d.\n", id_cliente, mesa_alocada, mesas_ocupadas);
+    }
+    pthread_mutex_unlock(&mutex_mesas);
+
+    return NULL;
 }
 
 void *cozinheiro(void *arg) {
@@ -161,7 +254,35 @@ void *estoquista(void *arg) {
 }
 
 void *gestor_mesas(void *arg) {
-    //Lógica do gestor de mesas
+    while (estado_restaurante == ABERTO) {
+        pthread_mutex_lock(&mutex_mesas);
+
+        // O gestor espera até que haja um cliente esperando E haja capacidade para adicionar uma nova mesa.
+        while (clientes_esperando == 0 && mesas_ocupadas >= mesas_ativas) {
+            // Este wait faz o gestor dormir ate ser acordado por um cliente ou por uma limpeza
+            pthread_cond_wait(&cond_demanda_por_mesas, &mutex_mesas); 
+        }
+
+        // Se houver um cliente esperando e o restaurante não atingiu a capacidade máxima
+        if (clientes_esperando > 0 && mesas_ativas < num_mesas_max) {
+            mesas_ativas++;
+            mesas[mesas_ativas - 1].id_mesa = mesas_ativas - 1;
+            mesas[mesas_ativas - 1].status = LIVRE;
+            
+            printf("Gestor de Mesas: Nova mesa %d adicionada. Total de mesas: %d.\n", mesas_ativas - 1, mesas_ativas);
+            
+            clientes_esperando--;                       // Reduz a contagem de clientes esperando
+        }
+
+        // Sinaliza para os clientes que uma mesa está livre
+        pthread_cond_broadcast(&cond_mesa_livre);
+        pthread_mutex_unlock(&mutex_mesas);
+        
+        sleep(2);
+    }
+
+    printf("Gestor de Mesas: Encerrando operação...\n");
+    return NULL;
 }
 
 void *gerente_dia(void *arg) {
