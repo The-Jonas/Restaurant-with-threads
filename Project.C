@@ -46,12 +46,16 @@ pthread_mutex_t mutex_pedidos;
 pthread_mutex_t mutex_pratos_prontos;
 pthread_mutex_t mutex_estoque;
 pthread_mutex_t mutex_restaurante;
+pthread_mutex_t mutex_pagamentos;                           // Novo mutex para a logica de pagamento
 
 pthread_cond_t cond_mesa_livre;
 pthread_cond_t cond_pedido_feito;
 pthread_cond_t cond_prato_pronto;
 pthread_cond_t cond_estoque_disponivel;
 pthread_cond_t cond_mesa_suja;
+pthread_cond_t cond_demanda_por_mesas;
+pthread_cond_t cond_garcom_pedido_pronto;                   // Para o cliente esperar pelo garcom
+pthread_cond_t cond_cliente_pronto_para_pagar;              // Para o garcom esperar o cliente pagar
 
 //Estado do Restaurante
 int num_clientes_max;
@@ -115,6 +119,7 @@ int main(int argc, char *argv[]) {
     pthread_cond_init(&cond_prato_pronto, NULL);
     pthread_cond_init(&cond_estoque_disponivel, NULL);
     pthread_cond_init(&cond_mesa_suja, NULL);
+    pthread_cond_init(&cond_demanda_por_mesas, NULL);
 
     //Alocar memória para as estruturas
     mesas = (Mesa*) malloc(num_mesas_max * sizeof(Mesa));
@@ -159,7 +164,7 @@ int clientes_esperando = 0;                             // Variável para rastre
 int ingredientes_em_falta = 0;                          // Quantidade de tipos de ingredientes em falta
 pthread_t thread_clientes[200];                         // Array para as threads de clientes
 int clientes_criados = 0;
-pthread_cond_t cond_demanda_por_mesas;
+
 
 void *cliente(void *arg) {
     int id_cliente = *((int *)arg);
@@ -467,7 +472,7 @@ void *gerente_dia(void *arg) {
              sleep(12); // Simula o fim de semana
         }
     }
-    
+
     printf("Gerente: O restaurante encerrou suas operacoes permanentemente.\n");
-    return NULL
+    return NULL;
 }
