@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200112L // Necessário para clock_gettime
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +7,12 @@
 #include <unistd.h>                             // Para sleep
 #include <time.h>                               // Para o timeout e o rand()
 #include <errno.h>                              // Para ETIMEOUT
+
+/* Para compilar e rodar o projeto, use:
+gcc Project.c -o restaurante.exe -pthread (ou variante de compilação)
+    E
+./restaurante.exe
+*/
 
 /*=======================================================*
  *=========== VARIÁVEIS GLOBAIS E DEFINIÇÕES ============*
@@ -42,7 +49,8 @@ pthread_mutex_t mutex_fila_chamados;
 pthread_mutex_t mutex_fila_pendentes;
 pthread_mutex_t mutex_fila_prontos;
 pthread_mutex_t mutex_estoque;
-pthread_mutex_t mutex_rand;
+pthread_mutex_t mutex_rand_seed;                                        // Mutex para proteger a semente
+pthread_mutex_t mutex_lucro;
 
 pthread_cond_t cond_cliente_chegou;                                     // Cliente sinaliza pro gestor
 pthread_cond_t cond_mesa_disponivel;                                    // Gestor sinaliza pro cliente
@@ -61,7 +69,11 @@ int mesas_ocupadas;
 int clientes_esperando;
 int restaurante_fechado;                                                // 0 = ABERTO,  1 = FECHADO
 
-int estoque[TOTAL_PRATOS];                                              
+int estoque[TOTAL_PRATOS];
+
+int precos_pratos[TOTAL_PRATOS];
+int lucro_dia;
+int lucro_total_semana = 0;
 
 /*=======================================================*
  *=========== STRUCTS (Estruturas de Dados) =============*
@@ -108,10 +120,15 @@ void print_safe(char* msg) {
 
 // Função thread-safe para gerar números aléatorios
 int rand_safe(int min_val, int max_val) {
-    pthread_mutex_lock(&mutex_rand);
-    int val = (rand() % max_val) + min_val;
-    pthread_mutex_unlock(&mutex_rand);
-    return val;
+    pthread_mutex_lock(&mutex_rand_seed);
+    static unsigned int seed = 0;
+    if (seed == 0) {
+        seed = (unsigned int)time(NULL) + pthread_self();
+    }
+    
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    pthread_mutex_unlock(&mutex_rand_seed);
+    return min_val + (seed % (max_val - min_val + 1));
 }
 
  /*=======================================================*
@@ -138,13 +155,23 @@ int main() {
     pthread_mutex_init(&mutex_fila_pendentes, NULL);
     pthread_mutex_init(&mutex_fila_prontos, NULL);
     pthread_mutex_init(&mutex_estoque, NULL);
-    pthread_mutex_init(&mutex_rand, NULL);
+    pthread_mutex_init(&mutex_rand_seed, NULL);
+    pthread_mutex_init(&mutex_lucro, NULL);
 
     pthread_cond_init(&cond_cliente_chegou, NULL);
     pthread_cond_init(&cond_mesa_disponivel, NULL);
     pthread_cond_init(&cond_estoquista_precisa_repor, NULL);
     pthread_cond_init(&cond_estoque_reposto, NULL);
     pthread_cond_init(&cond_todos_clientes_sairam, NULL);
+
+    // *** NOVO BLOCO: GERAR E IMPRIMIR PREÇOS ***
+    printf("\n=================================================\n");
+    printf("Gerando o cardapio de precos para a semana (de 10 a 50 R$):\n");
+    for (int i = 0; i < TOTAL_PRATOS; i++) {
+        // Usamos sua função rand_safe para gerar preços de 10 a 50
+        precos_pratos[i] = rand_safe(10, 50); 
+        printf("  > Prato %d: %d R$\n", i, precos_pratos[i]);
+    }
 
     // Inicializa o estoque, uma única vez para os 7 dias
     for (int i = 0; i < TOTAL_PRATOS; i++) {
@@ -193,6 +220,7 @@ int main() {
 
     // 4. Fim da simulação
     printf("\n=================================================\n");
+    printf("========= LUCRO TOTAL DA SEMANA: %d R$ ========\n", lucro_total_semana);
     printf("======== Simulacao de 7 dias encerrada. =========\n");
     printf("=================================================\n");
 
@@ -203,7 +231,8 @@ int main() {
     pthread_mutex_destroy(&mutex_fila_pendentes);
     pthread_mutex_destroy(&mutex_fila_prontos);
     pthread_mutex_destroy(&mutex_estoque);
-    pthread_mutex_destroy(&mutex_rand);
+    pthread_mutex_destroy(&mutex_rand_seed);
+    pthread_mutex_destroy(&mutex_lucro);
     
     pthread_cond_destroy(&cond_cliente_chegou);
     pthread_cond_destroy(&cond_mesa_disponivel);
@@ -238,6 +267,10 @@ void* gerente_do_dia_func(void* arg) {
     count_pendentes = 0;
     count_prontos = 0;
     pthread_mutex_unlock(&mutex_restaurante);
+
+    pthread_mutex_lock(&mutex_lucro);
+    lucro_dia = 0;
+    pthread_mutex_unlock(&mutex_lucro);
 
     // 2. Acordar as threads "fixas"
     pthread_t tid_gestor_mesas;
@@ -275,11 +308,11 @@ void* gerente_do_dia_func(void* arg) {
         *cliente_id = i + 1;
         pthread_create(&clientes_threads[i], NULL, cliente_func, (void*)cliente_id);
 
-        sleep(rand_safe(2, 2));                                                                      // Timer random de 2 a 3 segundos
+        sleep(rand_safe(2, 3));                                                                      // Timer random de 2 a 3 segundos
     }
 
-    // 4. Simular o fechamento do restaurante (timer)
-    sleep(12);
+    // 4. SIMULAR O TEMPO QUE O RESTAURANTE FICA ABERTO (timer)
+    sleep(10);
 
     pthread_mutex_lock(&mutex_restaurante);
 
@@ -327,8 +360,12 @@ void* gerente_do_dia_func(void* arg) {
     for (i = 0; i < N_COZINHEIROS; i++) {
         pthread_join(tid_cozinheiros[i], NULL);
     }
-    
-    sprintf(buffer, "[⊛ GERENTE DO DIA] Encerrando o dia %d.\n", dia_atual);
+
+    // Salva e imprime o lucro do dia 
+    pthread_mutex_lock(&mutex_lucro);
+    lucro_total_semana += lucro_dia;
+    sprintf(buffer, "[⊛ GERENTE DO DIA] Encerrando o dia %d. (Lucro do dia: %d R$)\n", dia_atual, lucro_dia);
+    pthread_mutex_unlock(&mutex_lucro);
     print_safe(buffer);
     
     pthread_exit(NULL);
@@ -342,6 +379,7 @@ void* cliente_func(void* arg) {
     int id = *(int*)arg;
     free(arg);
     char buffer[200];
+    int id_prato_pedido;
 
     sprintf(buffer, "[● CLIENTE %d] Chegou ao restaurante.\n", id);
     print_safe(buffer);
@@ -413,7 +451,8 @@ void* cliente_func(void* arg) {
     // 3a. Cria o pedido
     Pedido* meu_pedido = malloc(sizeof(Pedido));
     meu_pedido->id_cliente = id;
-    meu_pedido->id_prato = rand_safe(0, TOTAL_PRATOS);                                                   // Escolhe um prato aleátorio 
+    meu_pedido->id_prato = rand_safe(0, TOTAL_PRATOS - 1);                                                   // Escolhe um prato aleátorio
+    id_prato_pedido = meu_pedido->id_prato; 
     pthread_cond_init(&meu_pedido->cond_prato_entregue, NULL);
 
     sprintf(buffer, "[● CLIENTE %d] Sentei e vou chamar o garcom (pedir prato %d).\n", id, meu_pedido->id_prato);
@@ -443,10 +482,16 @@ void* cliente_func(void* arg) {
     free(meu_pedido);                                                                               // Libera a memória do pedido
     
     // 5. Pagar e sair do restaurante
-    // 50% chance de sujar a mesa após terminar de comer
+
     pthread_mutex_lock(&mutex_restaurante);
 
-    if (rand_safe(0, 2) == 0) {
+    pthread_mutex_lock(&mutex_lucro);
+    lucro_dia += precos_pratos[id_prato_pedido]; // Usa o ID salvo
+    pthread_mutex_unlock(&mutex_lucro);
+
+
+    // 50% chance de sujar a mesa após terminar de comer
+    if (rand_safe(0, 1) == 0) {
         // 5a. MESA LIMPA 
         mesas_ocupadas--;
         sprintf(buffer, "[● CLIENTE %d] Terminei, paguei e liberei a mesa (limpa). (Vagas agora: %d)\n", id, mesas_criadas - mesas_ocupadas); 
