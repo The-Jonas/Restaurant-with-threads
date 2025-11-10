@@ -20,7 +20,7 @@ int MAX_ESTOQUE_PRATO;
 #define N_COZINHEIROS 2                                                 // Número de cozinheiros no restaurante
 #define TAMANHO_FILA 50                                                 // Tamanho máximo da fila de pedidos
 #define TOTAL_PRATOS 5                                                  // Total de pratos/receitas diferentes no restaurante
-#define TIMEOUT_CLIENTE_ESPERA 5                                        // Cliente espera 5 segundos max
+#define TIMEOUT_CLIENTE_ESPERA 3                                        // Cliente espera 5 segundos max
                                                                         
 // Enumerador para os dias da semana                            
 
@@ -42,6 +42,7 @@ pthread_mutex_t mutex_fila_chamados;
 pthread_mutex_t mutex_fila_pendentes;
 pthread_mutex_t mutex_fila_prontos;
 pthread_mutex_t mutex_estoque;
+pthread_mutex_t mutex_rand;
 
 pthread_cond_t cond_cliente_chegou;                                     // Cliente sinaliza pro gestor
 pthread_cond_t cond_mesa_disponivel;                                    // Gestor sinaliza pro cliente
@@ -105,11 +106,21 @@ void print_safe(char* msg) {
     pthread_mutex_unlock(&mutex_print);
 }
 
+// Função thread-safe para gerar números aléatorios
+int rand_safe(int min_val, int max_val) {
+    pthread_mutex_lock(&mutex_rand);
+    int val = (rand() % max_val) + min_val;
+    pthread_mutex_unlock(&mutex_rand);
+    return val;
+}
+
  /*=======================================================*
   *======================== MAIN =========================*
   *=======================================================*/
 
 int main() {
+    srand(time(NULL));                                                  // Semente para números aleatórios
+
     // 1. Obter os inputs do usuário
     printf("Digite o número maximo de clientes por dia: ");
     scanf("%d", &MAX_CLIENTES_POR_DIA);
@@ -127,18 +138,13 @@ int main() {
     pthread_mutex_init(&mutex_fila_pendentes, NULL);
     pthread_mutex_init(&mutex_fila_prontos, NULL);
     pthread_mutex_init(&mutex_estoque, NULL);
+    pthread_mutex_init(&mutex_rand, NULL);
 
     pthread_cond_init(&cond_cliente_chegou, NULL);
     pthread_cond_init(&cond_mesa_disponivel, NULL);
     pthread_cond_init(&cond_estoquista_precisa_repor, NULL);
     pthread_cond_init(&cond_estoque_reposto, NULL);
     pthread_cond_init(&cond_todos_clientes_sairam, NULL);
-
-    // Todos começam em 0, pois não há tarefas no início
-    sem_init(&sem_clientes_chamando, 0, 0);
-    sem_init(&sem_pedidos_pendentes, 0, 0);
-    sem_init(&sem_pedidos_prontos, 0, 0);
-    sem_init(&sem_limpeza_necessaria, 0, 0);
 
     // Inicializa o estoque, uma única vez para os 7 dias
     for (int i = 0; i < TOTAL_PRATOS; i++) {
@@ -160,14 +166,26 @@ int main() {
         }
 
         // --- Início do Dia de Trabalho --
+
+        // Todos começam em 0, pois não há tarefas no início
+        sem_init(&sem_clientes_chamando, 0, 0);
+        sem_init(&sem_pedidos_pendentes, 0, 0);
+        sem_init(&sem_pedidos_prontos, 0, 0);
+        sem_init(&sem_limpeza_necessaria, 0, 0);
         
         // A primeira thread a ser chamada é gerente_do_dia
         pthread_t tif_gerente_dia;
-        pthread_create(&tif_gerente_dia, NULL, gerente_do_dia_func, NULL);
+        pthread_create(&tif_gerente_dia, NULL, gerente_do_dia_func, NULL);  
 
         // A main espera o gerente do dia terminar
         // Ele só termina quando o dia acaba (restaurante fecha e todos os clientes saem)
         pthread_join(tif_gerente_dia, NULL);
+
+        // Destrói semáforos A CADA DIA
+        sem_destroy(&sem_clientes_chamando);
+        sem_destroy(&sem_pedidos_pendentes);
+        sem_destroy(&sem_pedidos_prontos);
+        sem_destroy(&sem_limpeza_necessaria);
 
         sprintf(buffer, "--- Fim do Dia %d ---\n", dia_atual);
         print_safe(buffer);
@@ -185,17 +203,13 @@ int main() {
     pthread_mutex_destroy(&mutex_fila_pendentes);
     pthread_mutex_destroy(&mutex_fila_prontos);
     pthread_mutex_destroy(&mutex_estoque);
+    pthread_mutex_destroy(&mutex_rand);
     
     pthread_cond_destroy(&cond_cliente_chegou);
     pthread_cond_destroy(&cond_mesa_disponivel);
     pthread_cond_destroy(&cond_estoquista_precisa_repor);
     pthread_cond_destroy(&cond_estoque_reposto);
     pthread_cond_destroy(&cond_todos_clientes_sairam);
-
-    sem_destroy(&sem_clientes_chamando);
-    sem_destroy(&sem_pedidos_pendentes);
-    sem_destroy(&sem_pedidos_prontos);
-    sem_destroy(&sem_limpeza_necessaria);
 
     return 0;
 }
@@ -210,7 +224,7 @@ int main() {
 
 void* gerente_do_dia_func(void* arg) {
     char buffer[200];
-    sprintf(buffer, "[GERENTE DO DIA] Bom dia! Iniciando o dia %d.\n", dia_atual);
+    sprintf(buffer, "[⊛ GERENTE DO DIA] Bom dia! Iniciando o dia %d.\n", dia_atual);
     print_safe(buffer);
 
     // TODO: 
@@ -261,7 +275,7 @@ void* gerente_do_dia_func(void* arg) {
         *cliente_id = i + 1;
         pthread_create(&clientes_threads[i], NULL, cliente_func, (void*)cliente_id);
 
-        sleep(rand() % 3 + 2);                                                                      // Timer random de 2 a 4 segundos
+        sleep(rand_safe(2, 2));                                                                      // Timer random de 2 a 3 segundos
     }
 
     // 4. Simular o fechamento do restaurante (timer)
@@ -269,7 +283,7 @@ void* gerente_do_dia_func(void* arg) {
 
     pthread_mutex_lock(&mutex_restaurante);
 
-    print_safe("\n[GERENTE DO DIA] RESTAURANTE FECHANDO! Nao entram mais clientes.\n");
+    print_safe("\n[⊛ GERENTE DO DIA] RESTAURANTE FECHANDO! Nao entram mais clientes.\n");
     restaurante_fechado = 1;
 
     // Acorda todos os threads esperando para que vejam que fechou
@@ -278,7 +292,7 @@ void* gerente_do_dia_func(void* arg) {
 
     // 5. Espera todos os clientes DE DENTRO saírem
 
-    sprintf(buffer, "[GERENTE DO DIA] Esperando ultimos %d clientes sairem...\n", mesas_ocupadas);
+    sprintf(buffer, "[⊛ GERENTE DO DIA] Esperando ultimos %d clientes sairem...\n", mesas_ocupadas);
     print_safe(buffer);
     
     while (mesas_ocupadas > 0) {
@@ -314,7 +328,7 @@ void* gerente_do_dia_func(void* arg) {
         pthread_join(tid_cozinheiros[i], NULL);
     }
     
-    sprintf(buffer, "[GERENTE DO DIA] Encerrando o dia %d.\n", dia_atual);
+    sprintf(buffer, "[⊛ GERENTE DO DIA] Encerrando o dia %d.\n", dia_atual);
     print_safe(buffer);
     
     pthread_exit(NULL);
@@ -329,13 +343,13 @@ void* cliente_func(void* arg) {
     free(arg);
     char buffer[200];
 
-    sprintf(buffer, "[CLIENTE %d] Chegou ao restaurante.\n", id);
+    sprintf(buffer, "[● CLIENTE %d] Chegou ao restaurante.\n", id);
     print_safe(buffer);
     pthread_mutex_lock(&mutex_restaurante);
 
     // 1. Verifica se o restaurante já tá fechado
     if (restaurante_fechado) {
-        sprintf(buffer, "[CLIENTE %d] Restaurante ja esta fechado. Indo embora.\n", id);
+        sprintf(buffer, "[● CLIENTE %d] Restaurante ja esta fechado. Indo embora.\n", id);
         print_safe(buffer);
         pthread_mutex_unlock(&mutex_restaurante);
         pthread_exit(NULL);
@@ -345,10 +359,10 @@ void* cliente_func(void* arg) {
     if (mesas_ocupadas == mesas_criadas) {
         // 2a. Verifica se o restaurante está LOTADO (não pode colocar mais mesas)
         if (mesas_criadas == MAX_MESAS_RESTAURANTE) {
-            sprintf(buffer, "[CLIENTE %d] Restaurante lotado. Vou esperar por uma vaga.\n", id);
+            sprintf(buffer, "[● CLIENTE %d] Restaurante lotado. Vou esperar por uma vaga.\n", id);
             print_safe(buffer);
         } else {
-            sprintf(buffer, "[CLIENTE %d] Sem mesas. Vou esperar adicionarem uma.\n", id);
+            sprintf(buffer, "[● CLIENTE %d] Sem mesas. Vou esperar adicionarem uma.\n", id);
             print_safe(buffer);
         }
 
@@ -370,24 +384,24 @@ void* cliente_func(void* arg) {
 
         // 2c. Analisa o resultado da espera
         if (wait_result == ETIMEDOUT) {
-            sprintf(buffer, "[CLIENTE %d] Cansei de esperar e FUI EMBORA.\n", id);
+            sprintf(buffer, "[● CLIENTE %d] Cansei de esperar e FUI EMBORA.\n", id);
             print_safe(buffer);
             pthread_mutex_unlock(&mutex_restaurante);
             pthread_exit(NULL);
         }
 
         if (restaurante_fechado) {
-            sprintf(buffer, "[CLIENTE %d] Restaurante fechou enquanto eu esperava. Indo embora.\n", id);
+            sprintf(buffer, "[● CLIENTE %d] Restaurante fechou enquanto eu esperava. Indo embora.\n", id);
             print_safe(buffer);
             pthread_mutex_unlock(&mutex_restaurante);
             pthread_exit(NULL);
         }
 
         // Se saiu do loop e não deu timeout/fechou, é porque tem vaga!
-        sprintf(buffer, "[CLIENTE %d] Consegui uma mesa apos esperar!\n", id);
+        sprintf(buffer, "[● CLIENTE %d] Consegui uma mesa apos esperar!\n", id);
         print_safe(buffer);
     } else {
-        sprintf(buffer, "[CLIENTE %d] Sentei-me imediatamente.\n", id);
+        sprintf(buffer, "[● CLIENTE %d] Sentei-me imediatamente.\n", id);
         print_safe(buffer);
     }
 
@@ -399,10 +413,10 @@ void* cliente_func(void* arg) {
     // 3a. Cria o pedido
     Pedido* meu_pedido = malloc(sizeof(Pedido));
     meu_pedido->id_cliente = id;
-    meu_pedido->id_prato = rand() % TOTAL_PRATOS;                                                   // Escolhe um prato aleátorio 
+    meu_pedido->id_prato = rand_safe(0, TOTAL_PRATOS);                                                   // Escolhe um prato aleátorio 
     pthread_cond_init(&meu_pedido->cond_prato_entregue, NULL);
 
-    sprintf(buffer, "[CLIENTE %d] Sentei e vou chamar o garcom (pedir prato %d).\n", id, meu_pedido->id_prato);
+    sprintf(buffer, "[● CLIENTE %d] Sentei e vou chamar o garcom (pedir prato %d).\n", id, meu_pedido->id_prato);
     print_safe(buffer);
 
     // 3b. Adiciona na fila de chamados
@@ -419,22 +433,23 @@ void* cliente_func(void* arg) {
     }
 
     // 4. Comer
-    sprintf(buffer, "[CLIENTE %d] Recebi meu prato! Comendo...\n", id);
+    sprintf(buffer, "[● CLIENTE %d] Recebi meu prato! Comendo...\n", id);
     print_safe(buffer);
 
     pthread_mutex_unlock(&mutex_restaurante);                                                       // Agora que a interação com o garçom acabou, solta o mutex 
 
-    sleep(rand() % 5 + 3);                                                                          // Simula tempo comendo 
+    sleep(rand_safe(2, 5));                                                                         // Simula tempo comendo
+    pthread_cond_destroy(&meu_pedido->cond_prato_entregue); 
     free(meu_pedido);                                                                               // Libera a memória do pedido
     
     // 5. Pagar e sair do restaurante
     // 50% chance de sujar a mesa após terminar de comer
     pthread_mutex_lock(&mutex_restaurante);
 
-    if (rand() % 2 == 0) {
+    if (rand_safe(0, 2) == 0) {
         // 5a. MESA LIMPA 
         mesas_ocupadas--;
-        sprintf(buffer, "[CLIENTE %d] Terminei, paguei e liberei a mesa (limpa). (Vagas agora: %d)\n", id, mesas_criadas - mesas_ocupadas); 
+        sprintf(buffer, "[● CLIENTE %d] Terminei, paguei e liberei a mesa (limpa). (Vagas agora: %d)\n", id, mesas_criadas - mesas_ocupadas); 
         print_safe(buffer);
 
         // Libera a vaga
@@ -443,7 +458,7 @@ void* cliente_func(void* arg) {
 
         // Verifica se é o último cliente
         if (restaurante_fechado && mesas_ocupadas == 0){
-            sprintf(buffer, "[CLIENTE %d] Fui o ultimo a sair com o restaurante fechado! Avisando o gerente.\n", id);
+            sprintf(buffer, "[● CLIENTE %d] Fui o ultimo a sair com o restaurante fechado! Avisando o gerente.\n", id);
             print_safe(buffer);
             pthread_cond_broadcast(&cond_todos_clientes_sairam);
         }
@@ -451,7 +466,7 @@ void* cliente_func(void* arg) {
     } else {
         // 5b. MESA SUJA
         // A MESA CONTINUA OCUPADA (pela sujeira)
-        sprintf(buffer, "[CLIENTE %d] Terminei, paguei e SUJEI a mesa! Avisando os funcionários...\n", id);
+        sprintf(buffer, "[● CLIENTE %d] Terminei, paguei e SUJEI a mesa! Avisando os funcionários...\n", id);
         print_safe(buffer);
 
         // Acorda responsável pela limpeza
@@ -471,7 +486,7 @@ void* cliente_func(void* arg) {
 void* garcom_func(void* arg) {
     int id = (intptr_t)arg;
     char buffer[200];
-    sprintf(buffer, "[GARCOM %d] Pronto para atender.\n", id);
+    sprintf(buffer, "[► GARCOM %d] Pronto para atender.\n", id);
     print_safe(buffer);
 
     while (1) {
@@ -485,14 +500,12 @@ void* garcom_func(void* arg) {
             sem_post(&sem_clientes_chamando);
             break;
         }
-        pthread_mutex_unlock(&mutex_restaurante);
 
         // 2. Pega o pedido da fila de chamados
-        pthread_mutex_lock(&mutex_fila_chamados);
         Pedido* pedido_anotado = fila_chamados[--count_chamados];
         pthread_mutex_unlock(&mutex_fila_chamados);
 
-        sprintf(buffer, "[GARCOM %d] Anotando pedido do [CLIENTE %d] (prato %d).\n", id, pedido_anotado->id_cliente, pedido_anotado->id_prato);
+        sprintf(buffer, "[► GARCOM %d] Anotando pedido do [CLIENTE %d] (prato %d).\n", id, pedido_anotado->id_cliente, pedido_anotado->id_prato);
         print_safe(buffer);
 
         // 3. Leva o pedido para a cozinha (fila de pendentes)
@@ -518,7 +531,7 @@ void* garcom_func(void* arg) {
         Pedido* prato_pronto = fila_pedidos_prontos[--count_prontos];
         pthread_mutex_unlock(&mutex_fila_prontos);
 
-        sprintf(buffer, "[GARCOM %d] Entregando prato %d para [CLIENTE %d].\n", id, prato_pronto->id_prato, prato_pronto->id_cliente);
+        sprintf(buffer, "[► GARCOM %d] Entregando prato %d para [CLIENTE %d].\n", id, prato_pronto->id_prato, prato_pronto->id_cliente);
         print_safe(buffer);
 
         // 7. Acorda o cliente específico
@@ -530,7 +543,7 @@ void* garcom_func(void* arg) {
         // TODO: Receber pagamento e lidar com limpeza
     }
 
-    sprintf(buffer, "[GARCOM %d] Encerrando turno.\n", id);
+    sprintf(buffer, "[► GARCOM %d] Encerrando turno.\n", id);
     print_safe(buffer);
     pthread_exit(NULL);
 }
@@ -542,7 +555,7 @@ void* garcom_func(void* arg) {
 void* cozinheiro_func(void* arg) {
     int id = (intptr_t)arg;
     char buffer[200];
-    sprintf(buffer, "[COZINHEIRO %d] Pronto para cozinhar.\n", id);
+    sprintf(buffer, "[▲ COZINHEIRO %d] Pronto para cozinhar.\n", id);
     print_safe(buffer);
 
     while (1) {
@@ -561,7 +574,7 @@ void* cozinheiro_func(void* arg) {
         Pedido* pedido_fazer = fila_pedidos_pendentes[--count_pendentes];
         pthread_mutex_unlock(&mutex_fila_pendentes);
 
-        sprintf(buffer, "[COZINHEIRO %d] Recebi pedido do [CLIENTE %d] (prato %d).\n", id, pedido_fazer->id_cliente, pedido_fazer->id_prato);
+        sprintf(buffer, "[▲ COZINHEIRO %d] Recebi pedido do [CLIENTE %d] (prato %d).\n", id, pedido_fazer->id_cliente, pedido_fazer->id_prato);
         print_safe(buffer);
 
         // 3. Verifica estoque e prepara 
@@ -570,7 +583,7 @@ void* cozinheiro_func(void* arg) {
         // Se ele acordar e outro cozinheiro pegar o ingrediente, ele volta a dormir.
         // Se não tiver estoque:
         while (estoque[pedido_fazer->id_prato] == 0) {                          
-            sprintf(buffer, "[COZINHEIRO %d] Faltou igredientes para o prato %d. Acordando estoquista e esperando.\n", id, pedido_fazer->id_prato);
+            sprintf(buffer, "[▲ COZINHEIRO %d] Faltou igredientes para o prato %d. Acordando estoquista e esperando.\n", id, pedido_fazer->id_prato);
             print_safe(buffer);
 
             // 3a. Acorda o estoquista
@@ -582,7 +595,7 @@ void* cozinheiro_func(void* arg) {
 
         // 3d. Se saiu do loop, é porque tem estoque
         estoque[pedido_fazer->id_prato]--;
-        sprintf(buffer, "[COZINHEIRO %d] Preparando prato %d... (Estoque agora: %d)\n", id, pedido_fazer->id_prato, estoque[pedido_fazer->id_prato]);
+        sprintf(buffer, "[▲ COZINHEIRO %d] Preparando prato %d... (Estoque agora: %d)\n", id, pedido_fazer->id_prato, estoque[pedido_fazer->id_prato]);
         print_safe(buffer);
 
         pthread_mutex_unlock(&mutex_estoque);
@@ -598,7 +611,7 @@ void* cozinheiro_func(void* arg) {
         sem_post(&sem_pedidos_prontos);
     }
 
-    sprintf(buffer, "[COZINHEIRO %d] Encerrando turno.\n", id);
+    sprintf(buffer, "[▲ COZINHEIRO %d] Encerrando turno.\n", id);
     print_safe(buffer);
     pthread_exit(NULL);
 }
@@ -610,7 +623,7 @@ void* cozinheiro_func(void* arg) {
 void* estoquista_func(void* arg) {
     int id = (intptr_t)arg;
     char buffer[200];
-    sprintf(buffer, "[ESTOQUISTA %d] Pronto para repor estoque.\n", id);
+    sprintf(buffer, "[▩ ESTOQUISTA %d] Pronto para repor estoque.\n", id);
     print_safe(buffer);
 
     pthread_mutex_lock(&mutex_estoque);
@@ -623,14 +636,14 @@ void* estoquista_func(void* arg) {
             break; 
         }
 
-        sprintf(buffer, "[ESTOQUISTA %d] Fui acordado! Verificando estoques...\n", id);
+        sprintf(buffer, "[▩ ESTOQUISTA %d] Fui acordado! Verificando estoques...\n", id);
         print_safe(buffer);
         int repos_algo = 0;
 
         // 3. Verifica TODOS os pratos (conforme especificação)
         for (int i = 0; i < TOTAL_PRATOS; i++) {
             if (estoque[i] <= 1) { // Repõe se for 0 ou 1 
-                sprintf(buffer, "[ESTOQUISTA %d] Reposto estoque do prato %d (era %d, agora e %d).\n", id, i, estoque[i], MAX_ESTOQUE_PRATO);
+                sprintf(buffer, "[▩ ESTOQUISTA %d] Reposto estoque do prato %d (era %d, agora e %d).\n", id, i, estoque[i], MAX_ESTOQUE_PRATO);
                 print_safe(buffer);
                 estoque[i] = MAX_ESTOQUE_PRATO;
                 repos_algo = 1;
@@ -639,14 +652,14 @@ void* estoquista_func(void* arg) {
 
         // 4. Se repôs algo, acorda os cozinheiros
         if (repos_algo) {
-            sprintf(buffer, "[ESTOQUISTA %d] Reposicao concluida! Acordando cozinheiros.\n", id);
+            sprintf(buffer, "[▩ ESTOQUISTA %d] Reposicao concluida! Acordando cozinheiros.\n", id);
             print_safe(buffer);
             pthread_cond_broadcast(&cond_estoque_reposto);
         }
     }
     pthread_mutex_unlock(&mutex_estoque);
 
-    sprintf(buffer, "[ESTOQUISTA %d] Encerrando turno.\n", id);
+    sprintf(buffer, "[▩ ESTOQUISTA %d] Encerrando turno.\n", id);
     print_safe(buffer);
     pthread_exit(NULL);
 
@@ -658,7 +671,7 @@ void* estoquista_func(void* arg) {
 
 void* gestor_mesas_func(void* arg) {
     char buffer[200];
-    print_safe("[GESTOR DE MESAS] Pronto para gerenciar mesas.\n");
+    print_safe("[▬ GESTOR DE MESAS] Pronto para gerenciar mesas.\n");
 
     pthread_mutex_lock(&mutex_restaurante);
     while(1) {
@@ -676,14 +689,14 @@ void* gestor_mesas_func(void* arg) {
             // Cenário 1: Tem mesa livre (outro cliente saiu)
             if (mesas_ocupadas < mesas_criadas) {
                 // Não faz nada, só acorda os clientes
-                sprintf(buffer, "[GESTOR DE MESAS] Vi que tem vaga. Acordando clientes na fila!\n");
+                sprintf(buffer, "[▬ GESTOR DE MESAS] Vi que tem vaga. Acordando clientes na fila!\n");
                 print_safe(buffer);
                 pthread_cond_broadcast(&cond_mesa_disponivel);
             }
             // Cenário 2: Sem mesa livre, mas pode adicionar uma nova
             else if (mesas_criadas < MAX_MESAS_RESTAURANTE) {
                 mesas_criadas++;
-                sprintf(buffer, "[GESTOR DE MESAS] Adicionando mesa nova! (Total: %d)\n", mesas_criadas);
+                sprintf(buffer, "[▬ GESTOR DE MESAS] Adicionando mesa nova! (Total: %d)\n", mesas_criadas);
                 print_safe(buffer);
                 // Acorda os clientes para disputarem a nova mesa
                 pthread_cond_broadcast(&cond_mesa_disponivel);
@@ -697,7 +710,7 @@ void* gestor_mesas_func(void* arg) {
     }
 
     pthread_mutex_unlock(&mutex_restaurante);
-    print_safe("[GESTOR DE MESAS] Encerrando turno.\n");
+    print_safe("[▬ GESTOR DE MESAS] Encerrando turno.\n");
     pthread_exit(NULL);
 }
 
@@ -707,7 +720,7 @@ void* gestor_mesas_func(void* arg) {
 
 void* responsavel_limpeza_func(void* arg) {
     char buffer[200];
-    print_safe("[LIMPEZA] Pronto para limpar. \n");
+    print_safe("[◈ LIMPEZA] Pronto para limpar. \n");
 
     while(1) {
         // 1. Espera ser acordado por uma mesa suja
@@ -720,16 +733,17 @@ void* responsavel_limpeza_func(void* arg) {
             sem_post(&sem_limpeza_necessaria);
             break;
         }
+        pthread_mutex_unlock(&mutex_restaurante);
 
         // 3. Limpa a mesa (simulação)
-        sprintf(buffer, "[LIMPEZA] Uma mesa esta suja. Limpando...\n");
+        sprintf(buffer, "[◈ LIMPEZA] Uma mesa esta suja. Limpando...\n");
         print_safe(buffer);
         sleep(2);
 
         // 4. Libera a mesa
         pthread_mutex_lock(&mutex_restaurante);
         mesas_ocupadas--;                                       // AGORA sim a mesa está livre
-        sprintf(buffer, "[LIMPEZA] Mesa limpa e liberada! (Vagas agora: %d)\n", mesas_criadas - mesas_ocupadas);
+        sprintf(buffer, "[◈ LIMPEZA] Mesa limpa e liberada! (Vagas agora: %d)\n", mesas_criadas - mesas_ocupadas);
         print_safe(buffer);
 
         // Acorda clientes esperando e o gestor
@@ -738,7 +752,7 @@ void* responsavel_limpeza_func(void* arg) {
 
         // Verifica se é o último cliente
         if (restaurante_fechado && mesas_ocupadas == 0) {
-            sprintf(buffer, "[LIMPEZA] Limpei a ultima mesa! Avisando o gerente.\n");
+            sprintf(buffer, "[◈ LIMPEZA] Limpei a ultima mesa! Avisando o gerente.\n");
             print_safe(buffer);
             pthread_cond_broadcast(&cond_todos_clientes_sairam);
         }
@@ -746,6 +760,6 @@ void* responsavel_limpeza_func(void* arg) {
         pthread_mutex_unlock(&mutex_restaurante);
     }
 
-    print_safe("[LIMPEZA] Encerrando turno.\n");
+    print_safe("[◈ LIMPEZA] Encerrando turno.\n");
     pthread_exit(NULL);
 }
