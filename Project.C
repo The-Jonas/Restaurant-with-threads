@@ -74,6 +74,7 @@ int estoque[TOTAL_PRATOS];
 int precos_pratos[TOTAL_PRATOS];
 int lucro_dia;
 int lucro_total_semana = 0;
+int clientes_que_sairam_total;
 
 /*=======================================================*
  *=========== STRUCTS (Estruturas de Dados) =============*
@@ -110,6 +111,7 @@ void* cozinheiro_func(void *arg);
 void* estoquista_func(void *arg);
 void* gestor_mesas_func(void *arg);
 void* responsavel_limpeza_func(void *arg);
+void* timer_restaurante_func(void *arg);
 
 // Função utilitária para imprimir com mutex
 void print_safe(char* msg) {
@@ -276,10 +278,16 @@ void* gerente_do_dia_func(void* arg) {
     pthread_t tid_gestor_mesas;
     pthread_t tid_limpeza;
     pthread_t tid_estoquista;
+    pthread_t tid_timer;
     pthread_t tid_garcons[N_GARCONS];
     pthread_t tid_cozinheiros[N_COZINHEIROS];
-    //(Vamos criar garçons, cozinheiros, etc aqui...)
     int i;                                                                                          // Usando i como ID
+
+    int tempo_dia_segundos = 15; 
+    pthread_create(&tid_timer, NULL, timer_restaurante_func, (void*)(intptr_t)tempo_dia_segundos);
+    
+    //(Vamos criar garçons, cozinheiros, etc aqui...)
+    
     pthread_create(&tid_gestor_mesas, NULL, gestor_mesas_func, NULL);
     pthread_create(&tid_limpeza, NULL, responsavel_limpeza_func, NULL);
     pthread_create(&tid_estoquista, NULL, estoquista_func, (void*)(intptr_t)1);
@@ -294,7 +302,7 @@ void* gerente_do_dia_func(void* arg) {
     
     // 3. Loop para criar threads de clientes
     pthread_t clientes_threads[MAX_CLIENTES_POR_DIA];
-    for (int i = 0; i < MAX_CLIENTES_POR_DIA; i++) {
+    for (i = 0; i < MAX_CLIENTES_POR_DIA; i++) {
         // Se o restaurante fechar, parar de criar clientes
         pthread_mutex_lock(&mutex_restaurante);
         if (restaurante_fechado) {
@@ -311,27 +319,42 @@ void* gerente_do_dia_func(void* arg) {
         sleep(rand_safe(2, 3));                                                                      // Timer random de 2 a 3 segundos
     }
 
-    // 4. SIMULAR O TEMPO QUE O RESTAURANTE FICA ABERTO (timer)
-    sleep(10);
+    // Salva o número total de clientes que *tentarão* ser atendidos
+    int clientes_criados_total = i;
 
+    // 4. ESPERA O DIA ACABAR (pela Condição 1 OU 2)
     pthread_mutex_lock(&mutex_restaurante);
+    
+    sprintf(buffer, "[⊛ GERENTE DO DIA] Esperando o expediente acabar (atendi %d clientes)...\n", clientes_criados_total);
+    print_safe(buffer);
 
-    print_safe("\n[⊛ GERENTE DO DIA] RESTAURANTE FECHANDO! Nao entram mais clientes.\n");
+    while(1) {
+        // CONDIÇÃO 1: Todos os clientes do dia foram atendidos e restaurante ainda não fechou
+        if (clientes_que_sairam_total == clientes_criados_total && !restaurante_fechado) {
+            sprintf(buffer, "[⊛ GERENTE DO DIA] Todos os %d clientes foram atendidos! Fechando o restaurante.\n", clientes_criados_total);
+            print_safe(buffer);
+            break; 
+        }
+        
+        // CONDIÇÃO 2: O timer acabou E os de dentro saíram 
+        if (restaurante_fechado && mesas_ocupadas == 0) {
+            sprintf(buffer, "[⊛ GERENTE DO DIA] O restaurante fechou e todos os clientes sairam! Encerrando o dia.\n");
+            print_safe(buffer);
+            break;
+        }
+        
+        // Se nenhuma condição for atendida, dorme e espera um sinal
+        pthread_cond_wait(&cond_todos_clientes_sairam, &mutex_restaurante);
+    }
+
+    // 5. O dia acabou.
+    // Garante que o timer pare (caso o dia tenha acabado pela Condição 1)
     restaurante_fechado = 1;
 
     // Acorda todos os threads esperando para que vejam que fechou
     pthread_cond_broadcast(&cond_cliente_chegou);
     pthread_cond_broadcast(&cond_mesa_disponivel);
-
-    // 5. Espera todos os clientes DE DENTRO saírem
-
-    sprintf(buffer, "[⊛ GERENTE DO DIA] Esperando ultimos %d clientes sairem...\n", mesas_ocupadas);
-    print_safe(buffer);
     
-    while (mesas_ocupadas > 0) {
-        pthread_cond_wait(&cond_todos_clientes_sairam, &mutex_restaurante);
-    }
-
     // 6. Depois manda toda a staff ir embora
     // Acorda todos os staff que estão "dormindo"
     sem_post(&sem_clientes_chamando);
@@ -389,6 +412,10 @@ void* cliente_func(void* arg) {
     if (restaurante_fechado) {
         sprintf(buffer, "[● CLIENTE %d] Restaurante ja esta fechado. Indo embora.\n", id);
         print_safe(buffer);
+
+        clientes_que_sairam_total++;
+        pthread_cond_broadcast(&cond_todos_clientes_sairam);
+
         pthread_mutex_unlock(&mutex_restaurante);
         pthread_exit(NULL);
     }
@@ -424,6 +451,10 @@ void* cliente_func(void* arg) {
         if (wait_result == ETIMEDOUT) {
             sprintf(buffer, "[● CLIENTE %d] Cansei de esperar e FUI EMBORA.\n", id);
             print_safe(buffer);
+
+            clientes_que_sairam_total++;
+            pthread_cond_broadcast(&cond_todos_clientes_sairam);
+
             pthread_mutex_unlock(&mutex_restaurante);
             pthread_exit(NULL);
         }
@@ -431,6 +462,10 @@ void* cliente_func(void* arg) {
         if (restaurante_fechado) {
             sprintf(buffer, "[● CLIENTE %d] Restaurante fechou enquanto eu esperava. Indo embora.\n", id);
             print_safe(buffer);
+
+            clientes_que_sairam_total++;
+            pthread_cond_broadcast(&cond_todos_clientes_sairam);
+
             pthread_mutex_unlock(&mutex_restaurante);
             pthread_exit(NULL);
         }
@@ -477,7 +512,7 @@ void* cliente_func(void* arg) {
 
     pthread_mutex_unlock(&mutex_restaurante);                                                       // Agora que a interação com o garçom acabou, solta o mutex 
 
-    sleep(rand_safe(2, 5));                                                                         // Simula tempo comendo
+    sleep(rand_safe(3, 6));                                                                         // Simula tempo comendo
     pthread_cond_destroy(&meu_pedido->cond_prato_entregue); 
     free(meu_pedido);                                                                               // Libera a memória do pedido
     
@@ -500,6 +535,10 @@ void* cliente_func(void* arg) {
         // Libera a vaga
         pthread_cond_signal(&cond_cliente_chegou);
         pthread_cond_broadcast(&cond_mesa_disponivel);
+
+        // Incrementa e sinaliza
+        clientes_que_sairam_total++;
+        pthread_cond_broadcast(&cond_todos_clientes_sairam);
 
         // Verifica se é o último cliente
         if (restaurante_fechado && mesas_ocupadas == 0){
@@ -795,6 +834,10 @@ void* responsavel_limpeza_func(void* arg) {
         pthread_cond_signal(&cond_cliente_chegou);
         pthread_cond_broadcast(&cond_mesa_disponivel);
 
+        // Incrementa e sinaliza
+        clientes_que_sairam_total++;
+        pthread_cond_broadcast(&cond_todos_clientes_sairam);
+
         // Verifica se é o último cliente
         if (restaurante_fechado && mesas_ocupadas == 0) {
             sprintf(buffer, "[◈ LIMPEZA] Limpei a ultima mesa! Avisando o gerente.\n");
@@ -806,5 +849,43 @@ void* responsavel_limpeza_func(void* arg) {
     }
 
     print_safe("[◈ LIMPEZA] Encerrando turno.\n");
+    pthread_exit(NULL);
+}
+
+/*================================
+========= TIMER DO DIA ===========
+================================*/
+
+
+// Esta thread é criada pelo Gerente e corre em paralelo.
+// Seu único trabalho é dormir e "fechar" o restaurante no fim do tempo.
+
+void* timer_restaurante_func(void* arg) {
+    // Pega o tempo de duração do dia (em segundos)
+    int segundos_dia = (intptr_t)arg; 
+    char buffer[200];
+
+    // 1. Dorme pelo tempo total do dia
+    sleep(segundos_dia);
+
+    // 2. O tempo acabou. Fecha o restaurante.
+    pthread_mutex_lock(&mutex_restaurante);
+    
+    // Só fecha se o dia já não tiver terminado por outra razão
+    if (!restaurante_fechado) {
+        sprintf(buffer, "\n-------- TEMPO ESGOTADO! RESTAURANTE FECHANDO! --------\nEsperando os %d clientes saírem para finalizar expediente\n\n", mesas_ocupadas);
+        print_safe(buffer);
+        restaurante_fechado = 1;
+
+        // Acorda todos os clientes na fila DE FORA (para irem embora)
+        pthread_cond_broadcast(&cond_cliente_chegou);
+        pthread_cond_broadcast(&cond_mesa_disponivel);
+
+        // Acorda o GERENTE
+        pthread_cond_broadcast(&cond_todos_clientes_sairam);
+    }
+    
+    pthread_mutex_unlock(&mutex_restaurante);
+    
     pthread_exit(NULL);
 }
