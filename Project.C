@@ -283,7 +283,7 @@ void* gerente_do_dia_func(void* arg) {
     pthread_t tid_cozinheiros[N_COZINHEIROS];
     int i;                                                                                          // Usando i como ID
 
-    int tempo_dia_segundos = 15; 
+    int tempo_dia_segundos = 15;                                                                    // O tempo que o restaurante ficará aberto
     pthread_create(&tid_timer, NULL, timer_restaurante_func, (void*)(intptr_t)tempo_dia_segundos);
     
     //(Vamos criar garçons, cozinheiros, etc aqui...)
@@ -576,7 +576,6 @@ void* garcom_func(void* arg) {
     while (1) {
         // 1. Espera um cliente chamar OU um prato ficar pronto
         sem_wait(&sem_clientes_chamando);
-
         
         pthread_mutex_lock(&mutex_fila_chamados);
         if (restaurante_fechado && count_chamados == 0) {
@@ -855,7 +854,6 @@ void* responsavel_limpeza_func(void* arg) {
 /*================================
 ========= TIMER DO DIA ===========
 ================================*/
-
 
 // Esta thread é criada pelo Gerente e corre em paralelo.
 // Seu único trabalho é dormir e "fechar" o restaurante no fim do tempo.
