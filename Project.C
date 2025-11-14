@@ -166,11 +166,11 @@ int main() {
     pthread_cond_init(&cond_estoque_reposto, NULL);
     pthread_cond_init(&cond_todos_clientes_sairam, NULL);
 
-    // *** NOVO BLOCO: GERAR E IMPRIMIR PREÇOS ***
+    // GERAR E IMPRIMIR PREÇOS
     printf("\n=================================================\n");
     printf("Gerando o cardapio de precos para a semana (de 10 a 50 R$):\n");
     for (int i = 0; i < TOTAL_PRATOS; i++) {
-        // Usamos sua função rand_safe para gerar preços de 10 a 50
+        // rand_safe sendo usado para gerar preços de 10 a 50
         precos_pratos[i] = rand_safe(10, 50); 
         printf("  > Prato %d: %d R$\n", i, precos_pratos[i]);
     }
